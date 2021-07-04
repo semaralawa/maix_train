@@ -131,7 +131,7 @@ class Classifier(Train_Base):
             len(self.labels), activation='softmax')(out)
         self.model = tf.keras.models.Sequential([
             # CNN dan Maxpooling
-            tf.keras.layers.Conv2D(16, (3, 3), activation='relu', input_shape=self.input_shape,
+            tf.keras.layers.Conv2D(16, (3, 3), activation='relu', input_shape=self.input_shape),
             tf.keras.layers.MaxPooling2D(2, 2),
             tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
             tf.keras.layers.MaxPooling2D(2, 2),
