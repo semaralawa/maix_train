@@ -28,7 +28,7 @@ import random
 
 
 class Classifier(Train_Base):
-    def __init__(self, input_shape=(224, 224, 3), datasets_dir=None, datasets_zip=None, unpack_dir=None, logger = None,
+    def __init__(self,  =(224, 224, 3), datasets_dir=None, datasets_zip=None, unpack_dir=None, logger = None,
                 max_classes_num=15, min_images_num=40, max_images_num=2000, allow_reshape = False):
         '''
             input_shape: input shape (height, width)
@@ -126,12 +126,27 @@ class Classifier(Train_Base):
         out = base_model.output
         out = tf.keras.layers.Dropout(0.001, name='dropout')(out)
         preds=tf.keras.layers.Dense(len(self.labels), activation='softmax')(out)
-        self.model=tf.keras.models.Model(inputs=base_model.input,outputs=preds)
+        self.model = tf.keras.models.Sequential([
+            # CNN dan Maxpooling
+            tf.keras.layers.Conv2D(16, (3,3), activation='relu', input_shape=(image_size, image_size, 3)),
+            tf.keras.layers.MaxPooling2D(2, 2),
+            tf.keras.layers.Conv2D(32, (3,3), activation='relu'),
+            tf.keras.layers.MaxPooling2D(2, 2),
+            tf.keras.layers.Conv2D(32, (3,3), activation='relu'),
+            tf.keras.layers.MaxPooling2D(2, 2),
+            # flatten layer
+            tf.keras.layers.Flatten(),
+            # hidden layer
+            tf.keras.layers.Dense(32, activation='relu'),
+            tf.keras.layers.Dense(32, activation='relu'),
+            # output layer
+            tf.keras.layers.Dense(2, activation='softmax')
+        ])
         # only train top layers
-        for layer in self.model.layers[:86]:
-            layer.trainable=False
-        for layer in self.model.layers[86:]:
-            layer.trainable=True
+        # for layer in self.model.layers[:86]:
+        #     layer.trainable=False
+        # for layer in self.model.layers[86:]:
+        #     layer.trainable=True
         # #model.compile(loss=tf.keras.losses.categorical_crossentropy,optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),metrics=['accuracy'])
         self.model.compile(optimizer=tf.keras.optimizers.SGD(lr=1e-3), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         # #model.compile(optimizer=tf.compat.v1.train.RMSPropOptimizer(learning_rate=1e-3), loss='categorical_crossentropy',metrics=['accuracy'])
