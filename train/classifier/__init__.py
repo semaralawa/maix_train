@@ -128,9 +128,9 @@ class Classifier(Train_Base):
         preds=tf.keras.layers.Dense(len(self.labels), activation='softmax')(out)
         self.model=tf.keras.models.Model(inputs=base_model.input,outputs=preds)
         # only train top layers
-        for layer in self.model.layers[:86]:
+        for layer in self.model.layers[:100]:
             layer.trainable=False
-        for layer in self.model.layers[86:]:
+        for layer in self.model.layers[100:]:
             layer.trainable=True
         # #model.compile(loss=tf.keras.losses.categorical_crossentropy,optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),metrics=['accuracy'])
         self.model.compile(optimizer=tf.keras.optimizers.SGD(lr=1e-3), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
