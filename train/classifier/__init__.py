@@ -120,17 +120,17 @@ class Classifier(Train_Base):
 
         # pooling='avg', use around padding instead padding bottom and right for k210
         base_model = mobilenet.MobileNet0(input_shape=self.input_shape,
-                     alpha = 0.75, depth_multiplier = 1, dropout = 0.001, pooling='avg',
+                     alpha = 0.75, depth_multiplier = 1, dropout = 0.1, pooling='avg',
                      weights=weights, include_top=False)
         # update top layer
         out = base_model.output
-        out = tf.keras.layers.Dropout(0.001, name='dropout')(out)
+        out = tf.keras.layers.Dropout(0.1, name='dropout')(out)
         preds=tf.keras.layers.Dense(len(self.labels), activation='softmax')(out)
         self.model=tf.keras.models.Model(inputs=base_model.input,outputs=preds)
         # only train top layers
-        for layer in self.model.layers[:100]:
+        for layer in self.model.layers[:86]:
             layer.trainable=False
-        for layer in self.model.layers[100:]:
+        for layer in self.model.layers[86:]:
             layer.trainable=True
         # #model.compile(loss=tf.keras.losses.categorical_crossentropy,optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),metrics=['accuracy'])
         self.model.compile(optimizer=tf.keras.optimizers.SGD(lr=1e-3), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
