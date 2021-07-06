@@ -6,30 +6,28 @@
 '''
 
 
-
-import sys, os
+import random
+import itertools
+import numpy as np
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import zipfile
+import shutil
+import tempfile
+from utils.logger import Logger, Fake_Logger
+from utils import gpu_utils, isascii
+from train_base import Train_Base
+import sys
+import os
 curr_file_dir = os.path.abspath(os.path.dirname(os.path.abspath(__file__)))
 #     import os, sys
 #     root_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 #     sys.path.append(root_path)
-from train_base import Train_Base
-from utils import gpu_utils, isascii
-from utils.logger import Logger, Fake_Logger
-
-import tempfile
-import shutil
-import zipfile
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-import numpy as np
-import itertools
-import random
-
 
 
 class Classifier(Train_Base):
-    def __init__(self, input_shape=(224, 224, 3), datasets_dir=None, datasets_zip=None, unpack_dir=None, logger = None,
-                max_classes_num=15, min_images_num=40, max_images_num=2000, allow_reshape = False):
+    def __init__(self, input_shape=(224, 224, 3), datasets_dir=None, datasets_zip=None, unpack_dir=None, logger=None,
+                 max_classes_num=15, min_images_num=40, max_images_num=2000, allow_reshape=False):
         '''
             input_shape: input shape (height, width)
             min_images_num: min image number in one class
@@ -41,7 +39,7 @@ class Classifier(Train_Base):
         self.datasets_rm_dir = None
         self.model = None
         self.history = None
-        self.warning_msg = [] # append warning message here
+        self.warning_msg = []  # append warning message here
         if logger:
             self.log = logger
         else:
@@ -60,19 +58,21 @@ class Classifier(Train_Base):
         # get labels by directory name
         self.labels = self._get_labels(self.datasets_dir)
         # check label
-        ok, err_msg = self._is_label_data_valid(self.labels, max_classes_num=max_classes_num, min_images_num=min_images_num, max_images_num=max_images_num)
+        ok, err_msg = self._is_label_data_valid(
+            self.labels, max_classes_num=max_classes_num, min_images_num=min_images_num, max_images_num=max_images_num)
         if not ok:
             self.log.e(err_msg)
             raise Exception(err_msg)
         # check datasets format
-        ok, err_msg = self._is_datasets_shape_valid(self.datasets_dir, self.input_shape)
+        ok, err_msg = self._is_datasets_shape_valid(
+            self.datasets_dir, self.input_shape)
         if not ok:
             if not allow_reshape:
                 self.log.e(err_msg)
                 raise Exception(err_msg)
             self.on_warning_message(err_msg)
-            
-        class _Train_progress_cb(tf.keras.callbacks.Callback):#剩余训练时间回调
+
+        class _Train_progress_cb(tf.keras.callbacks.Callback):  # 剩余训练时间回调
             def __init__(self, epochs, user_progress_callback, logger):
                 self.epochs = epochs
                 self.logger = logger
@@ -84,7 +84,8 @@ class Classifier(Train_Base):
             def on_epoch_end(self, epoch, logs=None):
                 self.logger.i("epoch {} end: {}".format(epoch, logs))
                 if self.user_progress_callback:
-                    self.user_progress_callback((epoch + 1) / self.epochs * 100, "train epoch end")
+                    self.user_progress_callback(
+                        (epoch + 1) / self.epochs * 100, "train epoch end")
 
             def on_train_begin(self, logs=None):
                 self.logger.i("train start")
@@ -106,34 +107,52 @@ class Classifier(Train_Base):
                     self.log.e("clean temp files error:{}".format(e))
                 except Exception:
                     print("log object invalid")
-                
-    def train(self, epochs= 100,
-                    progress_cb=None,
-                    weights=os.path.join(curr_file_dir, "weights", "mobilenet_7_5_224_tf_no_top.h5"),
-                    batch_size = 5
-                    ):
+
+    def train(self, epochs=100,
+              progress_cb=None,
+              weights=os.path.join(curr_file_dir, "weights",
+                                   "mobilenet_7_5_224_tf_no_top.h5"),
+              batch_size=5
+              ):
         self.log.i("train, labels:{}".format(self.labels))
         self.log.d("train, datasets dir:{}".format(self.datasets_dir))
-        
+
         from mobilenet_sipeed import mobilenet
         import tensorflow as tf
 
         # pooling='avg', use around padding instead padding bottom and right for k210
         base_model = mobilenet.MobileNet0(input_shape=self.input_shape,
-                     alpha = 0.75, depth_multiplier = 1, dropout = 0.1, pooling='avg',
-                     weights=weights, include_top=False)
+                                          alpha=0.75, depth_multiplier=1, dropout=0.001, pooling='avg',
+                                          weights=weights, include_top=False)
         # update top layer
         out = base_model.output
-        out = tf.keras.layers.Dropout(0.1, name='dropout')(out)
-        preds=tf.keras.layers.Dense(len(self.labels), activation='softmax')(out)
-        self.model=tf.keras.models.Model(inputs=base_model.input,outputs=preds)
+        out = tf.keras.layers.Dropout(0.001, name='dropout')(out)
+        preds = tf.keras.layers.Dense(
+            len(self.labels), activation='softmax')(out)
+        self.model = tf.keras.models.Sequential([
+            # CNN dan Maxpooling
+            tf.keras.layers.Conv2D(16, (3, 3), activation='relu', input_shape=self.input_shape),
+            tf.keras.layers.MaxPooling2D(2, 2),
+            tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
+            tf.keras.layers.MaxPooling2D(2, 2),
+            tf.keras.layers.Conv2D(32, (3, 3), activation='relu'),
+            tf.keras.layers.MaxPooling2D(2, 2),
+            # flatten layer
+            tf.keras.layers.Flatten(),
+            # hidden layer
+            tf.keras.layers.Dense(32, activation='relu'),
+            tf.keras.layers.Dense(32, activation='relu'),
+            # output layer
+            tf.keras.layers.Dense(2, activation='softmax')
+        ])
         # only train top layers
-        for layer in self.model.layers[:70]:
-            layer.trainable=False
-        for layer in self.model.layers[70:]:
-            layer.trainable=True
+        # for layer in self.model.layers[:86]:
+        #     layer.trainable=False
+        # for layer in self.model.layers[86:]:
+        #     layer.trainable=True
         # #model.compile(loss=tf.keras.losses.categorical_crossentropy,optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),metrics=['accuracy'])
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(lr=1e-3), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(
+            lr=1e-3), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         # #model.compile(optimizer=tf.compat.v1.train.RMSPropOptimizer(learning_rate=1e-3), loss='categorical_crossentropy',metrics=['accuracy'])
         # print model summary
         self.model.summary()
@@ -143,41 +162,42 @@ class Classifier(Train_Base):
         from tensorflow.keras.preprocessing.image import ImageDataGenerator
         from tensorflow.keras.applications.mobilenet import preprocess_input
         train_gen = ImageDataGenerator(
-                preprocessing_function=preprocess_input,
-                rotation_range=180,
-                featurewise_center=True,
-                featurewise_std_normalization=True,
-                width_shift_range=0.2,height_shift_range=0.2,
-                zoom_range=0.5,
-                shear_range=0.5,
-                validation_split=0.2
-            )
+            preprocessing_function=preprocess_input,
+            rotation_range=180,
+            featurewise_center=True,
+            featurewise_std_normalization=True,
+            width_shift_range=0.2, height_shift_range=0.2,
+            zoom_range=0.5,
+            shear_range=0.5,
+            validation_split=0.2
+        )
 
         train_data = train_gen.flow_from_directory(self.datasets_dir,
-                target_size=(self.input_shape[0], self.input_shape[1]),
-                color_mode='rgb',
-                batch_size=batch_size,
-                class_mode='sparse', # None / sparse / binary / categorical
-                shuffle=True,
-                subset= "training"
-                )
+                                                   target_size=(
+                                                       self.input_shape[0], self.input_shape[1]),
+                                                   color_mode='rgb',
+                                                   batch_size=batch_size,
+                                                   class_mode='sparse',  # None / sparse / binary / categorical
+                                                   shuffle=True,
+                                                   subset="training"
+                                                   )
         valid_data = train_gen.flow_from_directory(self.datasets_dir,
-                target_size=(self.input_shape[0], self.input_shape[1]),
-                color_mode='rgb',
-                batch_size=batch_size,
-                class_mode='sparse',
-                shuffle=False,
-                subset= "validation"
-                )
-        self.log.i("train data:{}, valid data:{}".format(train_data.samples, valid_data.samples))
+                                                   target_size=(
+                                                       self.input_shape[0], self.input_shape[1]),
+                                                   color_mode='rgb',
+                                                   batch_size=batch_size,
+                                                   class_mode='sparse',
+                                                   shuffle=False,
+                                                   subset="validation"
+                                                   )
+        self.log.i("train data:{}, valid data:{}".format(
+            train_data.samples, valid_data.samples))
         callbacks = [self.Train_progress_cb(epochs, progress_cb, self.log)]
         self.history = self.model.fit_generator(train_data, validation_data=valid_data,
-                                 steps_per_epoch=train_data.samples//batch_size,
-                                 validation_steps=valid_data.samples//batch_size,
-                                 epochs=epochs,callbacks=callbacks)
+                                                steps_per_epoch=train_data.samples//batch_size,
+                                                validation_steps=valid_data.samples//batch_size,
+                                                epochs=epochs, callbacks=callbacks)
 
-
-    
     def report(self, out_path, limit_y_range=None):
         '''
             generate result charts
@@ -189,8 +209,9 @@ class Classifier(Train_Base):
 
         # set for server with no Tkagg GUI support, use agg(non-GUI backend)
         plt.switch_backend('agg')
-        
-        fig, axes = plt.subplots(3, 1, constrained_layout=True, figsize = (10, 16), dpi=100)
+
+        fig, axes = plt.subplots(
+            3, 1, constrained_layout=True, figsize=(10, 16), dpi=100)
         if limit_y_range:
             plt.ylim(limit_y_range)
 
@@ -210,8 +231,10 @@ class Classifier(Train_Base):
                 "loss": "loss",
                 "val_loss": "val_loss"
             }
-        axes[0].plot( history.history[kws['acc']], color='#2886EA', label="train")
-        axes[0].plot( history.history[kws['val_acc']], color = '#3FCD6D', label="valid")
+        axes[0].plot(history.history[kws['acc']],
+                     color='#2886EA', label="train")
+        axes[0].plot(history.history[kws['val_acc']],
+                     color='#3FCD6D', label="valid")
         axes[0].set_title('model accuracy')
         axes[0].set_ylabel('accuracy')
         axes[0].set_xlabel('epoch')
@@ -219,8 +242,10 @@ class Classifier(Train_Base):
         axes[0].legend()
 
         # loss and val_loss
-        axes[1].plot( history.history[kws['loss']], color='#2886EA', label="train")
-        axes[1].plot( history.history[kws['val_loss']], color = '#3FCD6D', label="valid")
+        axes[1].plot(history.history[kws['loss']],
+                     color='#2886EA', label="train")
+        axes[1].plot(history.history[kws['val_loss']],
+                     color='#3FCD6D', label="valid")
         axes[1].set_title('model loss')
         axes[1].set_ylabel('loss')
         axes[1].set_xlabel('epoch')
@@ -229,7 +254,7 @@ class Classifier(Train_Base):
 
         # confusion matrix
         cm, labels_idx = self._get_confusion_matrix()
-        axes[2].imshow(cm, interpolation='nearest', cmap = plt.cm.GnBu)
+        axes[2].imshow(cm, interpolation='nearest', cmap=plt.cm.GnBu)
         axes[2].set_title("confusion matrix")
         # axes[2].colorbar()
         num_local = np.array(range(len(labels_idx)))
@@ -238,11 +263,11 @@ class Classifier(Train_Base):
         axes[2].set_yticks(num_local)
         axes[2].set_yticklabels(labels_idx.keys())
 
-        thresh = cm.max() / 2. # front color black or white according to the background color
+        thresh = cm.max() / 2.  # front color black or white according to the background color
         for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
             axes[2].text(j, i, format(cm[i, j], 'd'),
-                    horizontalalignment = 'center',
-                    color = 'white' if cm[i, j] > thresh else "black")
+                         horizontalalignment='center',
+                         color='white' if cm[i, j] > thresh else "black")
         axes[2].set_ylabel('True label')
         axes[2].set_xlabel('Predicted label')
 
@@ -266,13 +291,14 @@ class Classifier(Train_Base):
             self.log.i("save model as .tflite file")
             if not tflite_path.endswith(".tflite"):
                 if os.path.isdir(tflite_path):
-                    tflite_path = os.path.join(tflite_path, "classifier.tflite")
+                    tflite_path = os.path.join(
+                        tflite_path, "classifier.tflite")
                 else:
                     tflite_path += ".tflite"
             import tensorflow as tf
             converter = tf.lite.TFLiteConverter.from_keras_model(self.model)
             tflite_model = converter.convert()
-            with open (tflite_path, "wb") as f:
+            with open(tflite_path, "wb") as f:
                 f.write(tflite_model)
 
     def infer(self, input):
@@ -287,8 +313,8 @@ class Classifier(Train_Base):
             images = os.listdir(os.path.join(self.datasets_dir, label))
             images = random.sample(images, num)
             for image in images:
-                shutil.copyfile(os.path.join(self.datasets_dir, label, image), os.path.join(copy_to_dir, image))
-
+                shutil.copyfile(os.path.join(self.datasets_dir,
+                                             label, image), os.path.join(copy_to_dir, image))
 
     def _get_confusion_matrix(self, ):
         batch_size = 5
@@ -296,20 +322,21 @@ class Classifier(Train_Base):
         from tensorflow.keras.applications.mobilenet import preprocess_input
         valid_gen = ImageDataGenerator(preprocessing_function=preprocess_input)
         valid_data = valid_gen.flow_from_directory(self.datasets_dir,
-                target_size=[self.input_shape[0], self.input_shape[1]],
-                color_mode='rgb',
-                batch_size=batch_size,
-                class_mode='sparse',
-                shuffle=False
-            )
-        prediction    = self.model.predict_generator(valid_data, steps=valid_data.samples//batch_size, verbose=1)
+                                                   target_size=[
+                                                       self.input_shape[0], self.input_shape[1]],
+                                                   color_mode='rgb',
+                                                   batch_size=batch_size,
+                                                   class_mode='sparse',
+                                                   shuffle=False
+                                                   )
+        prediction = self.model.predict_generator(
+            valid_data, steps=valid_data.samples//batch_size, verbose=1)
         predict_labels = np.argmax(prediction, axis=1)
         true_labels = valid_data.classes
         if len(predict_labels) != len(true_labels):
             true_labels = true_labels[0:len(predict_labels)]
         cm = confusion_matrix(true_labels, predict_labels)
         return cm, valid_data.class_indices
-        
 
     def _unpack_datasets(self, datasets_zip, datasets_dir=None, rm_dataset=True):
         '''
@@ -325,7 +352,8 @@ class Classifier(Train_Base):
                         ---- class2
         '''
         if not datasets_dir:
-            datasets_dir = os.path.join(tempfile.gettempdir(), "classifer_datasets")
+            datasets_dir = os.path.join(
+                tempfile.gettempdir(), "classifer_datasets")
             if rm_dataset:
                 self.datasets_rm_dir = datasets_dir
                 self.need_rm_datasets = True
@@ -340,12 +368,12 @@ class Classifier(Train_Base):
             if d.startswith(".") or not os.path.isdir(os.path.join(datasets_dir, d)):
                 continue
             dirs.append(d)
-        if len(dirs) == 1: # sub dir
+        if len(dirs) == 1:  # sub dir
             root_dir = dirs[0]
             datasets_dir = os.path.join(datasets_dir, root_dir)
         elif len(dirs) > 1:
             pass
-        else: # empty zip
+        else:  # empty zip
             return None
         return datasets_dir
 
@@ -358,7 +386,7 @@ class Classifier(Train_Base):
                 labels.append(d)
         return labels
 
-    def _is_label_data_valid(self, labels, max_classes_num = 15,  min_images_num=40, max_images_num=2000):
+    def _is_label_data_valid(self, labels, max_classes_num=15,  min_images_num=40, max_images_num=2000):
         '''
             labels len should >= 2
             and should be ascii letters, no Chinese or special words
@@ -368,9 +396,10 @@ class Classifier(Train_Base):
             err_msg = "datasets no enough class or directory error"
             return False, err_msg
         if len(labels) > max_classes_num:
-            err_msg = "datasets too much class or directory error, limit:{} classses".format(max_classes_num)
+            err_msg = "datasets too much class or directory error, limit:{} classses".format(
+                max_classes_num)
             return False, err_msg
-        print(labels,"---------")
+        print(labels, "---------")
         for label in labels:
             if not isascii(label):
                 return False, "class name(label) should not contain special letters"
@@ -381,7 +410,7 @@ class Classifier(Train_Base):
             if len(files) > max_images_num:
                 return False, "too many train images in one class, should < {}".format(max_images_num)
         return True, ""
-    
+
     def _is_datasets_shape_valid(self, datasets_dir, shape):
         from PIL import Image
         ok = True
@@ -409,12 +438,14 @@ def train_on_progress(progress, msg):
     print("progress:{}%, msg:{}".format(progress, msg))
     print("==============")
 
+
 def test_main(datasets_zip, model_path, report_path, use_cpu=False):
     if not os.path.exists("out"):
         os.makedirs("out")
     log = Logger(file_path="out/train.log")
     try:
-        gpu = gpu_utils.select_gpu(memory_require = 1*1024*1024*1024, tf_gpu_mem_growth=False)
+        gpu = gpu_utils.select_gpu(
+            memory_require=1*1024*1024*1024, tf_gpu_mem_growth=False)
     except Exception:
         gpu = None
     if gpu is None:
@@ -429,17 +460,18 @@ def test_main(datasets_zip, model_path, report_path, use_cpu=False):
     classifier.report(report_path)
     classifier.save(model_path)
 
+
 def test():
     if len(sys.argv) >= 4:
         test_main(sys.argv[1], sys.argv[2], sys.argv[3], use_cpu=True)
     else:
         test_main("./../../../../design/assets/test_classifier_datasets.zip",
-                "out/classifier.h5",
-                "out/report.jpg", use_cpu=True)
+                  "out/classifier.h5",
+                  "out/report.jpg", use_cpu=True)
+
 
 if __name__ == "__main__":
     '''
         arg: datasets_zip_file out_h5_model_path out_report_image_path
     '''
     test()
-
